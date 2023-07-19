@@ -1,11 +1,17 @@
 use proc_macro::TokenStream;
-use proc_macro2::Span;
-use syn::{parse_macro_input, DeriveInput, Ident, Data, GenericArgument, AngleBracketedGenericArguments, PathArguments, PathSegment, Path, TypePath, Type, punctuated::Pair};
+use proc_macro2::{Span, TokenTree};
 use quote::quote;
+use syn::{
+    parse_macro_input,
+    punctuated::Pair,
+    AngleBracketedGenericArguments, Data, DeriveInput, GenericArgument, Ident, Meta,
+    Path, PathArguments, PathSegment, Type, TypePath,
+};
 
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    //panic!("{:#?}", input);
     let name = input.ident;
     let builder_name = Ident::new(&format!("{}Builder", name), Span::call_site());
     let fields = match input.data {
@@ -20,7 +26,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let builder_field_decls = fields.iter().map(|field| {
         let field_ident = field.ident.as_ref().unwrap();
         let field_ty = &field.ty;
-        if is_option_type(field_ty).is_some() {
+        if is_wrapper_of("Option", field_ty).is_some() {
             quote!(#field_ident: #field_ty)
         } else {
             quote!(#field_ident: Option<#field_ty>)
@@ -35,8 +41,8 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let setters = fields.iter().map(|field| {
         let field_ident = field.ident.as_ref().unwrap();
         let field_ty = &field.ty;
-        
-        match is_option_type(field_ty) {
+
+        match is_wrapper_of("Option", field_ty) {
             Some(ty) => quote!(pub fn #field_ident(&mut self, #field_ident: #ty) -> &mut Self {
                 self.#field_ident = Some(#field_ident);
                 self
@@ -44,7 +50,67 @@ pub fn derive(input: TokenStream) -> TokenStream {
             _ => quote!(pub fn #field_ident(&mut self, #field_ident: #field_ty) -> &mut Self {
                 self.#field_ident = Some(#field_ident);
                 self
-            })
+            }),
+        }
+    });
+
+    let repeated_field_decls = fields.iter().map(|field| {
+        let field_ident = field.ident.as_ref().unwrap();
+        let field_ty = &field.ty;
+        //panic!("{:#?}", field_ty);
+
+        if let Some(attr) = field.attrs.iter().next() {
+            let meta_list = match attr.meta {
+                Meta::List(ref meta_list) => meta_list,
+                _ => return quote!()
+            };
+            //panic!("{:#?}", field_ident.to_string());
+            let is_builder_inert_attr =
+                matches![meta_list.path.segments.first(), Some(ps) if ps.ident == "builder"];
+            if is_builder_inert_attr {
+                let inner_ty = is_wrapper_of("Vec", field_ty).expect("expected type Vec<_>");
+
+                //panic!("{:?}", meta_list.tokens);
+                let mut tokens: proc_macro2::token_stream::IntoIter = meta_list.tokens.clone().into_iter();
+                //let b1 = matches![tokens.next(), Some(TokenTree::Ident(i)) if i.to_string() == "each"];
+                let tkntree = tokens.next().unwrap();
+                match tkntree {
+                    TokenTree::Ident(ref i) if i.to_string() != "each" => return syn::Error::new(Span::call_site(), "expected `builder(each = \"...\")`").to_compile_error(),
+                    _ => (),
+                }
+                if !false {
+                    //compile_error!("expected #[builder(each = ...)");
+                }
+                //let b2 = matches![tokens.next(), Some(TokenTree::Punct(p)) if p.as_char() == '='];
+                let tkntree = tokens.next().unwrap();
+                match tkntree {
+                    TokenTree::Punct(ref p) if p.as_char() != '=' => panic!("{:?}, {}", tkntree, p),
+                    _ => (),
+                }
+                let lit = match tokens.next() {
+                    Some(lit @ TokenTree::Literal(_)) => format!("{}", lit),
+                     _ => panic!(),
+                };
+                let each = lit.trim_matches('"');
+                let each_ident = Ident::new(&format!("{}", each), Span::call_site());
+                if each != field_ident.to_string() {
+                    let x: TokenStream = quote!(pub fn #each_ident(&mut self, #each_ident: #inner_ty) -> &mut Self {
+                        match self.#field_ident {
+                            Some(ref mut v) => v.push(#each_ident),
+                            None => self.#field_ident = Some(vec![#each_ident]),
+                        }
+                        self
+                    }).into();
+                    //panic!("{}", x.to_string());
+                    x.into()
+                } else {
+                    quote!()
+                }
+            } else {
+                panic!()
+            }
+        } else {
+            quote!()
         }
     });
 
@@ -53,9 +119,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
         let field_ty = &field.ty;
         let field_ident_str = field_ident.to_string();
 
-        if is_option_type(field_ty).is_some() {
+        if is_wrapper_of("Option", field_ty).is_some() {
             quote!(
                 let #field_ident = self.#field_ident.clone();
+            )
+        } else if is_wrapper_of("Vec", field_ty).is_some() {
+            quote!(
+                let #field_ident = self.#field_ident.clone().unwrap_or_default();
             )
         } else {
             quote!(
@@ -78,6 +148,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 })
             }
             #(#setters)*
+            #(#repeated_field_decls)*
         }
         impl #name {
             pub fn builder() -> #builder_name {
@@ -88,37 +159,28 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     };
     expanded.into()
-    //unimplemented!()
 }
 
-fn is_option_type(field_ty: &Type) -> Option<Type> {
+fn is_wrapper_of(wrapper_ty: &str, field_ty: &Type) -> Option<Type> {
     let segments = match field_ty {
-        Type::Path(
-            TypePath {
-                qself: None,
-                path: Path {
-                    segments, ..
-                },
-            },
-        ) => segments,
+        Type::Path(TypePath {
+            qself: None,
+            path: Path { segments, .. },
+        }) => segments,
         _ => return None,
     };
-    
+
     let generic_args = match segments.pairs().next() {
-        Some(Pair::End(
-            PathSegment {
-                ident: i,
-                arguments: PathArguments::AngleBracketed(
-                    AngleBracketedGenericArguments {
-                        args, ..
-                    },
-                ),
-            })) if i.to_string() == "Option" => args,
+        Some(Pair::End(PathSegment {
+            ident: i,
+            arguments: PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }),
+        })) if i.to_string() == wrapper_ty => args,
         _ => return None,
     };
 
     match generic_args.pairs().next() {
         Some(Pair::End(GenericArgument::Type(ty))) => Some(ty.clone()),
-        _ => None
+        _ => None,
     }
 }
+
