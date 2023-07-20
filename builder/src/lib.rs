@@ -29,17 +29,17 @@ pub fn derive(input: TokenStream) -> TokenStream {
         let field_ty = &field.ty;
 
         // If the field is already an Option, do not wrap another Option around it.
-        if is_wrapper_of("Option", field_ty).is_some() {
-            quote!(#field_ident: #field_ty)
+        if let Some(ty) = is_wrapper_of("Option", field_ty) {
+            quote!(#field_ident: std::option::Option<#ty>)
         } else {
-            quote!(#field_ident: Option<#field_ty>)
+            quote!(#field_ident: std::option::Option<#field_ty>)
         }
     });
 
     // Initial field values of builder.
     let builder_field_inits = fields.iter().map(|field| {
         let field_ident = field.ident.as_ref().unwrap();
-        quote!(#field_ident: None)
+        quote!(#field_ident: std::option::Option::None)
     });
 
     // Setter methods of builder.
@@ -50,11 +50,11 @@ pub fn derive(input: TokenStream) -> TokenStream {
         // If the field is an Option, its inner type is parameter to its setter.
         match is_wrapper_of("Option", field_ty) {
             Some(ty) => quote!(pub fn #field_ident(&mut self, #field_ident: #ty) -> &mut Self {
-                self.#field_ident = Some(#field_ident);
+                self.#field_ident = std::option::Option::Some(#field_ident);
                 self
             }),
             _ => quote!(pub fn #field_ident(&mut self, #field_ident: #field_ty) -> &mut Self {
-                self.#field_ident = Some(#field_ident);
+                self.#field_ident = std::option::Option::Some(#field_ident);
                 self
             }),
         }
@@ -108,8 +108,8 @@ pub fn derive(input: TokenStream) -> TokenStream {
             if repeated_method_name != field_ident.to_string() {
                 quote!(pub fn #repeated_method_name(&mut self, #repeated_method_name: #inner_ty) -> &mut Self {
                     match self.#field_ident {
-                        Some(ref mut v) => v.push(#repeated_method_name),
-                        None => self.#field_ident = Some(vec![#repeated_method_name]),
+                        std::option::Option::Some(ref mut v) => v.push(#repeated_method_name),
+                        std::option::Option::None => self.#field_ident = Some(vec![#repeated_method_name]),
                     }
                     self
                 })
@@ -149,9 +149,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
             #(#builder_field_decls),*
         }
         impl #builder_struct_name {
-            pub fn build(&mut self) -> Result<#struct_name, Box<dyn std::error::Error>> {
+            pub fn build(&mut self) -> std::result::Result<#struct_name, std::boxed::Box<dyn std::error::Error>> {
                 #(#build_checks)*
-                Ok(#struct_name {
+                std::result::Result::Ok(#struct_name {
                     #(#builder_instantiation_values),*
                 })
             }
