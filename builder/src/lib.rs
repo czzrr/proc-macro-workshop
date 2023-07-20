@@ -65,17 +65,20 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 _ => return quote!()
             };
             //panic!("{:#?}", field_ident.to_string());
+            let builder_path = meta_list.path.segments.first();
             let is_builder_inert_attr =
-                matches![meta_list.path.segments.first(), Some(ps) if ps.ident == "builder"];
+                matches![builder_path, Some(ps) if ps.ident == "builder"];
             if is_builder_inert_attr {
                 let inner_ty = is_wrapper_of("Vec", field_ty).expect("expected type Vec<_>");
 
-                //panic!("{:?}", meta_list.tokens);
+                //panic!("{:#?}", attr);
                 let mut tokens: proc_macro2::token_stream::IntoIter = meta_list.tokens.clone().into_iter();
                 //let b1 = matches![tokens.next(), Some(TokenTree::Ident(i)) if i.to_string() == "each"];
                 let tkntree = tokens.next().unwrap();
                 match tkntree {
-                    TokenTree::Ident(ref i) if i.to_string() != "each" => return syn::Error::new(Span::call_site(), "expected `builder(each = \"...\")`").to_compile_error(),
+                    TokenTree::Ident(ref i) if i.to_string() != "each" => {
+                        return syn::Error::new_spanned(attr.meta.clone(), "expected `builder(each = \"...\")`").to_compile_error();
+                    },
                     _ => (),
                 }
                 if !false {
