@@ -1,167 +1,121 @@
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenTree};
-use quote::quote;
+use quote::{quote, ToTokens};
 use syn::{
-    parse_macro_input, punctuated::Pair, AngleBracketedGenericArguments, Data, DeriveInput,
-    GenericArgument, Ident, Meta, Path, PathArguments, PathSegment, Type, TypePath,
+    parse_macro_input, punctuated::Pair, AngleBracketedGenericArguments, Data, DataStruct,
+    DeriveInput, Field, Fields, GenericArgument, Ident, Meta, Path, PathArguments, PathSegment,
+    Type, TypePath,
 };
 
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-
-    let struct_name = input.ident;
-    let builder_struct_name = Ident::new(&format!("{}Builder", struct_name), Span::call_site());
+    let ast = parse_macro_input!(input as DeriveInput);
+    let name = ast.ident;
+    let builder_name = Ident::new(&format!("{}Builder", name), Span::call_site());
 
     // Fields of struct.
-    let fields = match input.data {
-        Data::Struct(s) => s.fields,
-        _ => {
-            return syn::Error::new(Span::call_site(), "Only structs are supported")
-                .to_compile_error()
-                .into()
-        }
+    let fields = if let Data::Struct(DataStruct {
+        fields: Fields::Named(ref fields_named),
+        ..
+    }) = ast.data
+    {
+        fields_named.named.iter()
+    } else {
+        return syn::Error::new(
+            Span::call_site(),
+            "Only structs with named fields are supported",
+        )
+        .to_compile_error()
+        .into();
     };
 
     // Field declarations of the builder type.
-    let builder_field_decls = fields.iter().map(|field| {
-        let field_ident = field.ident.as_ref().unwrap();
-        let field_ty = &field.ty;
+    let builder_fields = fields.clone().map(|field| {
+        let name = field.ident.as_ref().unwrap();
+        let ty = &field.ty;
 
         // If the field is already an Option, do not wrap another Option around it.
-        if let Some(ty) = is_wrapper_of("Option", field_ty) {
-            quote!(#field_ident: std::option::Option<#ty>)
+        if wrapper("Option", ty).is_some() {
+            quote!(#name: #ty)
         } else {
-            quote!(#field_ident: std::option::Option<#field_ty>)
+            quote!(#name: std::option::Option<#ty>)
         }
     });
 
     // Initial field values of builder.
-    let builder_field_inits = fields.iter().map(|field| {
-        let field_ident = field.ident.as_ref().unwrap();
-        quote!(#field_ident: std::option::Option::None)
+    let builder_init_values = fields.clone().map(|field| {
+        let name = field.ident.as_ref().unwrap();
+        quote!(#name: std::option::Option::None)
     });
 
     // Setter methods of builder.
-    let builder_setters = fields.iter().map(|field| {
-        let field_ident = field.ident.as_ref().unwrap();
-        let field_ty = &field.ty;
+    let methods = fields.clone().map(|field| {
+        let name = field.ident.as_ref().unwrap();
+        let ty = &field.ty;
+
+        let method = quote!(pub fn #name(&mut self, #name: #ty) -> &mut Self {
+            self.#name = std::option::Option::Some(#name);
+            self
+        });
 
         // If the field is an Option, its inner type is parameter to its setter.
-        match is_wrapper_of("Option", field_ty) {
-            Some(ty) => quote!(pub fn #field_ident(&mut self, #field_ident: #ty) -> &mut Self {
-                self.#field_ident = std::option::Option::Some(#field_ident);
+        if let Some(inner_ty) = wrapper("Option", ty) {
+            quote!(pub fn #name(&mut self, #name: #inner_ty) -> &mut Self {
+                self.#name = std::option::Option::Some(#name);
                 self
-            }),
-            _ => quote!(pub fn #field_ident(&mut self, #field_ident: #field_ty) -> &mut Self {
-                self.#field_ident = std::option::Option::Some(#field_ident);
-                self
-            }),
-        }
-    });
-
-    // Methods for specifying values one at a time.
-    let repeated_field_decls = fields.iter().map(|field| {
-        let field_ident = field.ident.as_ref().unwrap();
-        let field_ty = &field.ty;
-
-        // Parse attributes of field.
-        if let Some(attr) = field.attrs.iter().next() {
-            // Error to return when the attribute is in the wrong format.
-            let expected_builder_list_err =
-                syn::Error::new_spanned(attr.meta.clone(), "expected `builder(each = \"...\")`")
-                    .to_compile_error();
-
-            // Inside the attribute, we expect `builder(each = ...)`, which is a meta list.
-            let meta_list = match attr.meta {
-                Meta::List(ref meta_list) => meta_list,
-                _ => return expected_builder_list_err,
-            };
-
-            // The path of the meta list is the `builder` of `builder(each = ...)`.
-            let builder_path = meta_list.path.segments.first();
-
-            // I think this is guaranteed to be true, as we can't refer to any attributes not specified in the proc macro declaration.
-            assert!(matches![builder_path, Some(ps) if ps.ident == "builder"]);
-
-            // Fields annotated with the attribute is of type Vec.
-            let inner_ty = is_wrapper_of("Vec", field_ty).expect("field type should be Vec<_>");
-
-            let tokens: Vec<TokenTree> =
-                meta_list.tokens.clone().into_iter().collect();
-            if tokens.len() != 3 {
-                return expected_builder_list_err;
-            }
-
-            // Check for `each` and `=`.
-            let each = &tokens[0];
-            if each.to_string() != "each" {
-                return expected_builder_list_err;
-            }
-            let eq = &tokens[1];
-            if eq.to_string() != "=" {
-                return expected_builder_list_err;
-            }
-            
-            // If the repeated method name equals the field name, do nothing.
-            let repeated_method_name = Ident::new((&tokens[2]).to_string().trim_matches('"'), Span::call_site());
-            if repeated_method_name != field_ident.to_string() {
-                quote!(pub fn #repeated_method_name(&mut self, #repeated_method_name: #inner_ty) -> &mut Self {
-                    match self.#field_ident {
-                        std::option::Option::Some(ref mut v) => v.push(#repeated_method_name),
-                        std::option::Option::None => self.#field_ident = Some(vec![#repeated_method_name]),
-                    }
-                    self
-                })
-            } else {
-                quote!()
-            }
+            })
         } else {
-            quote!()
+            let (conflict, repeated_field_method) = builder_of(field);
+            // If there is a conflict between the field name and the annotated `each` repeated field method name,
+            // only generate the repeated field method.
+            if conflict {
+                repeated_field_method
+            } else {
+                quote!(#repeated_field_method
+                #method)
+                .to_token_stream()
+                .into()
+            }
         }
     });
 
     // Build the field values.
-    let build_checks = fields.iter().map(|field| {
-        let field_ident = field.ident.as_ref().unwrap();
-        let field_ty = &field.ty;
-        let field_ident_str = field_ident.to_string();
+    let build_fields = fields.clone().map(|field| {
+        let name = field.ident.as_ref().unwrap();
+        let ty = &field.ty;
+        let name_str = name.to_string();
 
-        if is_wrapper_of("Option", field_ty).is_some() {
+        if wrapper("Option", ty).is_some() {
             quote!(
-                let #field_ident = self.#field_ident.clone();
+                #name: self.#name.clone()
             )
-        } else if is_wrapper_of("Vec", field_ty).is_some() {
+        } else if wrapper("Vec", ty).is_some() {
             quote!(
-                let #field_ident = self.#field_ident.clone().unwrap_or_default();
+                #name: self.#name.clone().unwrap_or_default()
             )
         } else {
             quote!(
-                let #field_ident = self.#field_ident.clone().ok_or(format!("field `{}` not set", #field_ident_str))?;
+                #name: self.#name.clone().ok_or(format!("field `{}` not set", #name_str))?
             )
         }
     });
 
-    let builder_instantiation_values = fields.iter().map(|field| field.ident.as_ref().unwrap());
-
     let expanded = quote! {
-        pub struct #builder_struct_name {
-            #(#builder_field_decls),*
+        pub struct #builder_name {
+            #(#builder_fields),*
         }
-        impl #builder_struct_name {
-            pub fn build(&mut self) -> std::result::Result<#struct_name, std::boxed::Box<dyn std::error::Error>> {
-                #(#build_checks)*
-                std::result::Result::Ok(#struct_name {
-                    #(#builder_instantiation_values),*
+        impl #builder_name {
+            pub fn build(&mut self) -> std::result::Result<#name, std::boxed::Box<dyn std::error::Error>> {
+                std::result::Result::Ok(#name {
+                    #(#build_fields),*
                 })
             }
-            #(#builder_setters)*
-            #(#repeated_field_decls)*
+            #(#methods)*
         }
-        impl #struct_name {
-            pub fn builder() -> #builder_struct_name {
-                #builder_struct_name {
-                    #(#builder_field_inits),*
+        impl #name {
+            pub fn builder() -> #builder_name {
+                #builder_name {
+                    #(#builder_init_values),*
                 }
             }
         }
@@ -169,9 +123,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
     expanded.into()
 }
 
-/// Test if `field_ty` is of wrapper type `wrapper_ty`, e.g., Option or Vec.
-fn is_wrapper_of(wrapper_ty: &str, field_ty: &Type) -> Option<Type> {
-    let segments = match field_ty {
+/// If `ty` is a wrapper of type `wrapper_ty`, return the inner type.
+/// For example, Option<T> returns T.
+fn wrapper(wrapper_ty: &str, ty: &Type) -> Option<Type> {
+    let segments = match ty {
         Type::Path(TypePath {
             qself: None,
             path: Path { segments, .. },
@@ -191,4 +146,62 @@ fn is_wrapper_of(wrapper_ty: &str, field_ty: &Type) -> Option<Type> {
         Some(Pair::End(GenericArgument::Type(ty))) => Some(ty.clone()),
         _ => None,
     }
+}
+
+/// Check if the given field is annotated with the builder attribute
+/// and return the repeated field method name if so.
+fn builder_of(field: &Field) -> (bool, proc_macro2::TokenStream) {
+    if field.attrs.len() != 1 {
+        return (false, quote!());
+    }
+    let attr = &field.attrs[0];
+
+    // Error to return when the attribute is in the wrong format.
+    let expected_builder_list_err =
+        syn::Error::new_spanned(attr.meta.clone(), "expected `builder(each = \"...\")`")
+            .to_compile_error();
+
+    if attr.meta.path().get_ident().unwrap() != "builder" {
+        return (false, expected_builder_list_err);
+    }
+
+    // Inside the attribute, we expect `builder(each = ...)`, which is a meta list.
+    let meta_list = match attr.meta {
+        Meta::List(ref meta_list) => meta_list,
+        _ => return (false, expected_builder_list_err),
+    };
+
+    let tokens: Vec<TokenTree> = meta_list.tokens.clone().into_iter().collect();
+
+    if tokens.len() != 3 {
+        return (false, expected_builder_list_err);
+    }
+
+    // Check for `each` and `=`.
+    let each = &tokens[0];
+    if each.to_string() != "each" {
+        return (false, expected_builder_list_err);
+    }
+    let eq = &tokens[1];
+    if eq.to_string() != "=" {
+        return (false, expected_builder_list_err);
+    }
+
+    let repeated_field_name = Ident::new(
+        (&tokens[2]).to_string().trim_matches('"'),
+        Span::call_site(),
+    );
+
+    let name = field.ident.as_ref().unwrap();
+    let ty = &field.ty;
+    let inner_ty = wrapper("Vec", ty).unwrap();
+    let repeated_field_method = quote!(pub fn #repeated_field_name(&mut self, #repeated_field_name: #inner_ty) -> &mut Self {
+        match self.#name {
+            std::option::Option::Some(ref mut v) => v.push(#repeated_field_name),
+            std::option::Option::None => self.#name = Some(vec![#repeated_field_name]),
+        }
+        self
+    });
+
+    (&repeated_field_name == name, repeated_field_method)
 }
