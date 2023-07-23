@@ -1,4 +1,5 @@
 use proc_macro::TokenStream;
+use proc_macro2::Span;
 use syn::{parse_macro_input, DeriveInput, Data, DataStruct, FieldsNamed, Fields, Field, Expr, Lit, ExprLit};
 use quote::quote;
 
@@ -23,10 +24,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
         let name_str = name.to_string();
 
         let format = debug_attr_format(f);
-
         let formatted_value = match format {
             Some(fmt) => {
-                quote!(&format_args!(#fmt, &self.#name))
+                fmt
             }
             None => quote!(&self.#name)
         };
@@ -50,7 +50,8 @@ pub fn derive(input: TokenStream) -> TokenStream {
     expanded.into()
 }
 
-fn debug_attr_format(f: &Field) -> Option<String> {
+fn debug_attr_format(f: &Field) -> Option<proc_macro2::TokenStream> {
+    eprintln!("{:#?}", f);
     if f.attrs.is_empty() {
         return None;
     }
@@ -66,5 +67,9 @@ fn debug_attr_format(f: &Field) -> Option<String> {
         Expr::Lit(ExprLit { lit: Lit::Str(ref lit_str), .. }) => lit_str.value(),
         _ => panic!()
     };
-    Some(format)
+
+    let name = f.ident.as_ref().unwrap();
+    let format_ts = quote!(&format_args!(#format, &self.#name));
+
+    Some(format_ts)
 }
