@@ -1,6 +1,5 @@
 use proc_macro::TokenStream;
-use proc_macro2::Span;
-use syn::{parse_macro_input, DeriveInput, Data, DataStruct, FieldsNamed, Fields, Field, Expr, Lit, ExprLit};
+use syn::{parse_macro_input, DeriveInput, Data, DataStruct, FieldsNamed, Fields, Field, Expr, Lit, ExprLit, spanned::Spanned};
 use quote::quote;
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
@@ -55,17 +54,27 @@ fn debug_attr_format(f: &Field) -> Option<proc_macro2::TokenStream> {
     if f.attrs.is_empty() {
         return None;
     }
-    if f.attrs.len() != 1 {
-        panic!();
-    }
     let attr = &f.attrs[0];
-    let nv = attr.meta.require_name_value().unwrap();
-    if !nv.path.is_ident("debug") {
-        panic!();
+    if f.attrs.len() != 1 {
+        return Some(syn::Error::new_spanned(attr, "expected at most one attribute of type `#[debug = \"...\"]`")
+            .to_compile_error());
     }
+    let err = Some(syn::Error::new_spanned(attr, "expected `#[debug = \"...\"]`")
+    .to_compile_error());
+
+    let nv = if let Ok(nv) = attr.meta.require_name_value() {
+        nv
+    } else {
+        return err;
+    };
+
+    if !nv.path.is_ident("debug") {
+        return err;
+    }
+
     let format = match nv.value {
         Expr::Lit(ExprLit { lit: Lit::Str(ref lit_str), .. }) => lit_str.value(),
-        _ => panic!()
+        _ => return err
     };
 
     let name = f.ident.as_ref().unwrap();
