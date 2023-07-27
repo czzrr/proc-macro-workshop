@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, DeriveInput, Data, DataStruct, FieldsNamed, Fields, Field, Expr, Lit, ExprLit, Generics, GenericParam, parse_quote};
+use syn::{parse_macro_input, DeriveInput, Data, DataStruct, FieldsNamed, Fields, Field, Expr, Lit, ExprLit, Generics, GenericParam, parse_quote, punctuated::Iter, TypeParam, Type, TypePath, Path, PathArguments, AngleBracketedGenericArguments, GenericArgument};
 use quote::quote;
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
@@ -35,7 +35,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         )
     });
 
-    let generics = add_trait_bounds(ast.generics);
+    let generics = add_trait_bounds(ast.generics, fields.clone());
     //eprintln!("{:#?}", generics);
 
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
@@ -87,11 +87,36 @@ fn debug_attr_format(f: &Field) -> Option<proc_macro2::TokenStream> {
     Some(format_ts)
 }
 
-fn add_trait_bounds(mut generics: Generics) -> Generics {
+fn add_trait_bounds(mut generics: Generics, fields: Iter<'_, Field>) -> Generics {
     for param in &mut generics.params {
         if let GenericParam::Type(ref mut ty_param) = param {
-            ty_param.bounds.push(parse_quote!(std::fmt::Debug));
+            if !only_in_phantom_data(ty_param, &fields) {
+                ty_param.bounds.push(parse_quote!(std::fmt::Debug));
+            }
         }
     }
     generics
+}
+
+fn only_in_phantom_data(ty_param: &TypeParam, fields: &Iter<'_, Field>) -> bool {
+    fields.clone().filter(|f| match f.ty {
+        Type::Path(TypePath { path: Path { ref segments, ..}, ..}) => {
+            let ps = segments.first().unwrap();
+            let x = match ps.arguments {
+                PathArguments::AngleBracketed(AngleBracketedGenericArguments { ref args, ..}) => {
+                    match args.first().unwrap() {
+                        GenericArgument::Type(Type::Path(TypePath {
+                            path: Path {
+                                segments, ..
+                            }, ..
+                        })) => segments.first().unwrap().ident.to_string() == ty_param.ident.to_string(),
+                        _ => unimplemented!()
+                    }
+                },
+                _ => false,
+            };
+            ps.ident == "PhantomData" && x
+        },
+        _ => unimplemented!()
+    }).count() == 1
 }
