@@ -1,43 +1,93 @@
-// The #[sorted] macro is only defined to work on enum types, so this is a test
-// to ensure that when it's attached to a struct (or anything else) it produces
-// some reasonable error. Your macro will need to look into the syn::Item that
-// it parsed to ensure that it represents an enum, returning an error for any
-// other type of Item such as a struct.
+// Get ready for a challenging step -- this test case is going to be a much
+// bigger change than the others so far.
 //
-// This is an exercise in exploring how to return errors from procedural macros.
-// The goal is to produce an understandable error message which is tailored to
-// this specific macro (saying that #[sorted] cannot be applied to things other
-// than enum). For this you'll want to look at the syn::Error type, how to
-// construct it, and how to return it.
+// Not only do we want #[sorted] to assert that variants of an enum are written
+// in order inside the enum definition, but also inside match-expressions that
+// match on that enum.
 //
-// Notice that the return value of an attribute macro is simply a TokenStream,
-// not a Result with an error. The syn::Error type provides a method to render
-// your error as a TokenStream containing an invocation of the compile_error
-// macro.
+//     #[sorted]
+//     match conference {
+//         RustBeltRust => "...",
+//         RustConf => "...",
+//         RustFest => "...",
+//         RustLatam => "...",
+//         RustRush => "...",
+//     }
 //
-// A final tweak you may want to make is to have the `sorted` function delegate
-// to a private helper function which works with Result, so most of the macro
-// can be written with Result-returning functions while the top-level function
-// handles the conversion down to TokenStream.
+// Currently, though, procedural macro invocations on expressions are not
+// allowed by the stable compiler! To work around this limitation until the
+// feature stabilizes, we'll be implementing a new #[sorted::check] macro which
+// the user will need to place on whatever function contains such a match.
+//
+//     #[sorted::check]
+//     fn f() {
+//         let conference = ...;
+//
+//         #[sorted]
+//         match conference {
+//             ...
+//         }
+//     }
+//
+// The #[sorted::check] macro will expand by looking inside the function to find
+// any match-expressions carrying a #[sorted] attribute, checking the order of
+// the arms in that match-expression, and then stripping away the inner
+// #[sorted] attribute to prevent the stable compiler from refusing to compile
+// the code.
+//
+// Note that unlike what we have seen in the previous test cases, stripping away
+// the inner #[sorted] attribute will require the new macro to mutate the input
+// syntax tree rather than inserting it unchanged into the output TokenStream as
+// before.
+//
+// Overall, the steps to pass this test will be:
+//
+//   - Introduce a new procedural attribute macro called `check`.
+//
+//   - Parse the input as a syn::ItemFn.
+//
+//   - Traverse the function body looking for match-expressions. This part will
+//     be easiest if you can use the VisitMut trait from Syn and write a visitor
+//     with a visit_expr_match_mut method.
+//
+//   - For each match-expression, figure out whether it has #[sorted] as one of
+//     its attributes. If so, check that the match arms are sorted and delete
+//     the #[sorted] attribute from the list of attributes.
+//
+// The result should be that we get the expected compile-time error pointing out
+// that `Fmt` should come before `Io` in the match-expression.
 //
 //
-// Resources
+// Resources:
 //
-//   - The syn::Error type:
-//     https://docs.rs/syn/1.0/syn/struct.Error.html
+//   - The VisitMut trait to iterate and mutate a syntax tree:
+//     https://docs.rs/syn/1.0/syn/visit_mut/trait.VisitMut.html
+//
+//   - The ExprMatch struct:
+//     https://docs.rs/syn/1.0/syn/struct.ExprMatch.html
 
 use sorted::sorted;
 
+use std::fmt::{self, Display};
+use std::io;
+
 #[sorted]
-pub struct Error {
-    kind: ErrorKind,
-    message: String,
+pub enum Error {
+    Fmt(fmt::Error),
+    Io(io::Error),
 }
 
-enum ErrorKind {
-    Io,
-    Syntax,
-    Eof,
+impl Display for Error {
+    #[sorted::check]
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::Error::*;
+
+        #[sorted]
+        match self {
+            Io(e) => write!(f, "{}", e),
+            Fmt(e) => write!(f, "{}", e),
+        }
+    }
 }
 
 fn main() {}
