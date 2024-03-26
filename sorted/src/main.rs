@@ -1,36 +1,28 @@
-// When we checked enum definitions for sortedness, it was sufficient to compare
-// a single identifier (the name of the variant) for each variant. Match
-// expressions are different in that each arm may have a pattern that consists
-// of more than just one identifier.
-//
-// Ensure that patterns consisting of a path are correctly tested for
-// sortedness. These patterns will be of type Pat::Path, Pat::TupleStruct, or
-// Pat::Struct.
-//
-//
-// Resources:
-//
-//   - The syn::Pat syntax tree which forms the left hand side of a match arm:
-//     https://docs.rs/syn/1.0/syn/enum.Pat.html
+// There is one other common type of pattern that would be nice to support --
+// the wildcard or underscore pattern. The #[sorted] macro should check that if
+// a wildcard pattern is present then it is the last one.
 
 use sorted::sorted;
 
-use std::fmt::{self, Display};
-use std::io;
-
 #[sorted]
-pub enum Error {
-    Fmt(fmt::Error),
-    Io(io::Error),
+pub enum Conference {
+    RustBeltRust,
+    RustConf,
+    RustFest,
+    RustLatam,
+    RustRush,
 }
 
-impl Display for Error {
+impl Conference {
     #[sorted::check]
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    pub fn region(&self) -> &str {
+        use self::Conference::*;
+
         #[sorted]
         match self {
-            Error::Io(e) => write!(f, "{}", e),
-            Error::Fmt(e) => write!(f, "{}", e),
+            RustFest => "Europe",
+            RustLatam => "Latin America",
+            _ => "elsewhere",
         }
     }
 }

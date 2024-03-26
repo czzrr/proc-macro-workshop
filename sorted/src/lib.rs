@@ -68,18 +68,37 @@ impl VisitMut for FnMatchSortedCheck {
         if let Some(idx) = found {
             item.attrs.remove(idx);
         }
+
+        fn push_path(v: &mut Vec<(String, syn::Path)>, path: &syn::Path) {
+            v.push((join_path(path), path.clone()));
+        }
+
         let mut v = Vec::new();
-        for arm in &item.arms {
+        for (idx, arm) in item.arms.iter().enumerate() {
             match &arm.pat {
-                Pat::TupleStruct(pat) => {
-                    let mut segments = Vec::new();
-                    for segment in pat.path.segments.iter() {
-                        segments.push(segment.ident.to_string());
+                Pat::TupleStruct(pat) => push_path(&mut v, &pat.path),
+                Pat::Path(pat) => push_path(&mut v, &pat.path),
+                Pat::Struct(pat) => push_path(&mut v, &pat.path),
+                Pat::Ident(pat) => push_path(&mut v, &pat.ident.clone().into()),
+                Pat::Wild(pat) => {
+                    if idx != item.arms.len() - 1 {
+                        self.violator = Some(
+                            syn::Error::new_spanned(
+                                pat,
+                                "wildcard should be the last match pattern",
+                            )
+                            .into_compile_error(),
+                        );
+                        return;
                     }
-                    let s = segments.join("::");
-                    v.push((s, pat.path.clone()))
                 }
-                _ => (),
+                pat => {
+                    self.violator = Some(
+                        syn::Error::new_spanned(pat, "unsupported by #[sorted]")
+                            .into_compile_error(),
+                    );
+                    return;
+                }
             }
             for i in 0..v.len() {
                 for (pat1, _) in &v[..i] {
@@ -92,11 +111,21 @@ impl VisitMut for FnMatchSortedCheck {
                             )
                             .into_compile_error(),
                         );
+                        return;
                     }
                 }
             }
         }
     }
+}
+
+fn join_path(path: &syn::Path) -> String {
+    let mut segments = Vec::new();
+    for segment in path.segments.iter() {
+        segments.push(segment.ident.to_string());
+    }
+
+    segments.join("::")
 }
 
 #[proc_macro_attribute]
