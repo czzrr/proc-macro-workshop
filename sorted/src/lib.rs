@@ -72,8 +72,12 @@ impl VisitMut for FnMatchSortedCheck {
         for arm in &item.arms {
             match &arm.pat {
                 Pat::TupleStruct(pat) => {
-                    let s = pat.path.segments.first().unwrap().ident.to_string();
-                    v.push((s, pat.span()))
+                    let mut segments = Vec::new();
+                    for segment in pat.path.segments.iter() {
+                        segments.push(segment.ident.to_string());
+                    }
+                    let s = segments.join("::");
+                    v.push((s, pat.path.clone()))
                 }
                 _ => (),
             }
@@ -82,8 +86,8 @@ impl VisitMut for FnMatchSortedCheck {
                     let (pat2, span2) = &v[i];
                     if let std::cmp::Ordering::Less = pat2.cmp(pat1) {
                         self.violator = Some(
-                            syn::Error::new(
-                                span2.clone(),
+                            syn::Error::new_spanned(
+                                span2,
                                 format!("{} should sort before {}", pat2, pat1),
                             )
                             .into_compile_error(),
