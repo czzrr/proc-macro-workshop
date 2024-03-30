@@ -17,10 +17,19 @@ impl Parse for Seq {
             .base10_parse::<usize>()
             .unwrap();
         let _: Token![..] = input.parse()?;
-        let end = input
-            .parse::<syn::LitInt>()?
-            .base10_parse::<usize>()
-            .unwrap();
+        let end = if let Ok(_) = input.parse::<Token![=]>() {
+            input
+                .parse::<syn::LitInt>()?
+                .base10_parse::<usize>()
+                .unwrap()
+                + 1
+        } else {
+            input
+                .parse::<syn::LitInt>()?
+                .base10_parse::<usize>()
+                .unwrap()
+        };
+
         let group: proc_macro2::Group = input.parse()?;
         let body = group.stream().into();
 

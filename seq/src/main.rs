@@ -1,33 +1,24 @@
-// This test case should hopefully be a freebie if all of the previous ones are
-// passing. This test demonstrates using the seq macro to construct a const
-// array literal.
-//
-// The generated code would be:
-//
-//     [Proc::new(0), Proc::new(1), ..., Proc::new(255),]
+// The previous examples all used an exclusive range, MIN..MAX. Now make it work
+// for an inclusive range MIN..=MAX that includes the upper range bound!
 
 use seq::seq;
 
-const PROCS: [Proc; 256] = {
-    seq!(N in 0..256 {
-        [
-            #(
-                Proc::new(N),
-            )*
-        ]
-    })
-};
-
-struct Proc {
-    id: usize,
-}
-
-impl Proc {
-    const fn new(id: usize) -> Self {
-        Proc { id }
+seq!(N in 16..=20 {
+    enum E {
+        #(
+            Variant~N,
+        )*
     }
-}
+});
 
 fn main() {
-    assert_eq!(PROCS[32].id, 32);
+    let e = E::Variant16;
+
+    let desc = match e {
+        E::Variant16 => "min",
+        E::Variant17 | E::Variant18 | E::Variant19 => "in between",
+        E::Variant20 => "max",
+    };
+
+    assert_eq!(desc, "min");
 }
